@@ -37,16 +37,6 @@ volumes:
   config_repo:
     driver: local
 
-# ============================================================
-#  SECRETS (use Docker Swarm secrets in production)
-# ============================================================
-secrets:
-  db_password:
-    file: ./secrets/db_password.txt
-  redis_password:
-    file: ./secrets/redis_password.txt
-  jwt_secret:
-    file: ./secrets/jwt_secret.txt
 
 services:
 
@@ -63,11 +53,9 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: banking_admin
-      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
       POSTGRES_DB: auth_db
       PGDATA: /var/lib/postgresql/data/pgdata
-    secrets:
-      - db_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
