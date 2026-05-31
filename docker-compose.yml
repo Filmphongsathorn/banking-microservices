@@ -742,3 +742,19 @@ services:
       - elasticsearch
     profiles:
       - heavy-ops
+
+  # ----------------------------------------------------------
+  #  Frontend Web App
+  # ----------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: banking-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    networks:
+      - banking-network
+    depends_on:
+      - api-gateway
