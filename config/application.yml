@@ -16,8 +16,9 @@ spring:
       auto-commit: false
 
   jpa:
+    generate-ddl: true
     hibernate:
-      ddl-auto: validate          # Use Flyway/Liquibase for migrations in prod
+      ddl-auto: update
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
