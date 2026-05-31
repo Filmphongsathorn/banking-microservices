@@ -37,14 +37,14 @@ public class DailyReconciliationJob {
         int discrepancyCount = 0;
 
         for (Account account : allAccounts) {
-            List<LedgerEntry> entries = ledgerEntryRepository.findByAccountIdOrderByCreatedAtDesc(account.getAccountId());
+            List<LedgerEntry> entries = ledgerEntryRepository.findByAccountIdOrderByCreatedAtDesc(account.getAccountNo());
             
             // คำนวณหายอดรวมจาก Ledger
             BigDecimal calculatedBalance = BigDecimal.ZERO;
             for (LedgerEntry entry : entries) {
-                if ("CREDIT".equalsIgnoreCase(entry.getOperation())) {
+                if ("CREDIT".equalsIgnoreCase(entry.getOperation().name())) {
                     calculatedBalance = calculatedBalance.add(entry.getAmount());
-                } else if ("DEBIT".equalsIgnoreCase(entry.getOperation())) {
+                } else if ("DEBIT".equalsIgnoreCase(entry.getOperation().name())) {
                     calculatedBalance = calculatedBalance.subtract(entry.getAmount());
                 }
             }
@@ -52,7 +52,7 @@ public class DailyReconciliationJob {
             if (calculatedBalance.compareTo(account.getBalance()) != 0) {
                 discrepancyCount++;
                 log.error("[EOD-RECONCILIATION] DISCREPANCY DETECTED! AccountId: {}, Stored Balance: {}, Calculated Ledger Balance: {}", 
-                        account.getAccountId(), account.getBalance(), calculatedBalance);
+                        account.getAccountNo(), account.getBalance(), calculatedBalance);
                 
                 // TODO: พ่น Alert เข้า Kafka ให้ Ops Team ตรวจสอบด่วน
             }
