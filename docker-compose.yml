@@ -629,7 +629,7 @@ services:
       SPRING_SECURITY_USER_NAME: ${KAFKA_UI_USER:-admin}
       SPRING_SECURITY_USER_PASSWORD: ${KAFKA_UI_PASS:-admin}
     ports:
-      - "9090:8080"
+      - "9091:8080"
     networks:
       - banking-network
     profiles:
