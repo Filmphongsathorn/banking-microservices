@@ -1,0 +1,5 @@
+# Config for profile-service (docker profile)
+# Extends application.yml shared config
+spring:
+  application:
+    name: profile-service

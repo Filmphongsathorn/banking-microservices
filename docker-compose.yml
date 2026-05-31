@@ -1,0 +1,739 @@
+# ============================================================
+#  Banking System – Production Docker Compose
+#  Blueprint: Auth | Profile | Account | Transaction | Notification
+# ============================================================
+
+x-common-env: &common-env
+  SPRING_PROFILES_ACTIVE: docker
+  EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-admin:eureka-secret-2024@eureka-server:8761/eureka/
+  CONFIG_SERVER_URL: http://config-server:8888
+  JAVA_OPTS: >-
+    -XX:+UseContainerSupport
+    -XX:MaxRAMPercentage=75.0
+    -XX:+UseG1GC
+    -XX:+HeapDumpOnOutOfMemoryError
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 15s
+  timeout: 10s
+  retries: 5
+  start_period: 40s
+
+networks:
+  banking-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  kafka_data:
+    driver: local
+  zookeeper_data:
+    driver: local
+  zookeeper_logs:
+    driver: local
+  config_repo:
+    driver: local
+
+# ============================================================
+#  SECRETS (use Docker Swarm secrets in production)
+# ============================================================
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+  redis_password:
+    file: ./secrets/redis_password.txt
+  jwt_secret:
+    file: ./secrets/jwt_secret.txt
+
+services:
+
+  # ==========================================================
+  #  MIDDLEWARE LAYER
+  # ==========================================================
+
+  # ----------------------------------------------------------
+  #  PostgreSQL – Single container, 5 databases
+  # ----------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: banking-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: banking_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_DB: auth_db
+      PGDATA: /var/lib/postgresql/data/pgdata
+    secrets:
+      - db_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U banking_admin -d auth_db"]
+      <<: *healthcheck-defaults
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+        reservations:
+          memory: 512m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ----------------------------------------------------------
+  #  Redis – Cache + Idempotency Store
+  # ----------------------------------------------------------
+  redis:
+    image: redis:7.2-alpine
+    container_name: banking-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-changeme}
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme}", "ping"]
+      <<: *healthcheck-defaults
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+          cpus: "0.5"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ----------------------------------------------------------
+  #  Zookeeper (for Kafka)
+  # ----------------------------------------------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: banking-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SYNC_LIMIT: 2
+      ZOOKEEPER_MAX_CLIENT_CNXNS: 100
+      ZOOKEEPER_LOG4J_ROOT_LOGLEVEL: WARN
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_logs:/var/lib/zookeeper/log
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      <<: *healthcheck-defaults
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.5"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ----------------------------------------------------------
+  #  Apache Kafka
+  # ----------------------------------------------------------
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: banking-kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_DELETE_TOPIC_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      KAFKA_LOG4J_ROOT_LOGLEVEL: WARN
+      KAFKA_NUM_PARTITIONS: 3
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    ports:
+      - "29092:29092"
+    networks:
+      - banking-network
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "kafka-broker-api-versions",
+          "--bootstrap-server",
+          "localhost:9092",
+        ]
+      <<: *healthcheck-defaults
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ----------------------------------------------------------
+  #  Kafka Topic Initializer (one-shot job)
+  # ----------------------------------------------------------
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: banking-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - banking-network
+    command: >
+      bash -c "
+        echo 'Creating Kafka topics...'
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic user.registered      --partitions 3 --replication-factor 1 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic account.created      --partitions 3 --replication-factor 1 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic transaction.initiated --partitions 3 --replication-factor 1 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic transaction.completed --partitions 3 --replication-factor 1 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic transaction.failed    --partitions 3 --replication-factor 1 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic notification.email    --partitions 3 --replication-factor 1 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic notification.sms      --partitions 3 --replication-factor 1 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic audit.events          --partitions 6 --replication-factor 1 &&
+        echo 'All topics created successfully!'
+      "
+    restart: "no"
+
+  # ==========================================================
+  #  INFRASTRUCTURE LAYER
+  # ==========================================================
+
+  # ----------------------------------------------------------
+  #  Spring Cloud Config Server
+  # ----------------------------------------------------------
+  config-server:
+    image: banking/config-server:latest
+    build:
+      context: ./config-server
+      dockerfile: Dockerfile
+    container_name: banking-config-server
+    restart: unless-stopped
+    environment:
+      SERVER_PORT: 8888
+      SPRING_PROFILES_ACTIVE: docker,native
+      SPRING_CLOUD_CONFIG_SERVER_NATIVE_SEARCH_LOCATIONS: file:/config-repo
+      ENCRYPT_KEY: ${CONFIG_ENCRYPT_KEY:-my-secret-encrypt-key-change-in-prod}
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,refresh
+    volumes:
+      - ./config:/config-repo:ro
+    ports:
+      - "8888:8888"
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8888/actuator/health || exit 1"]
+      <<: *healthcheck-defaults
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.5"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ----------------------------------------------------------
+  #  Eureka Service Registry
+  # ----------------------------------------------------------
+  eureka-server:
+    image: banking/service-registry:latest
+    build:
+      context: ./service-registry
+      dockerfile: Dockerfile
+    container_name: banking-eureka
+    restart: unless-stopped
+    depends_on:
+      config-server:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8761
+      EUREKA_CLIENT_REGISTER_WITH_EUREKA: "false"
+      EUREKA_CLIENT_FETCH_REGISTRY: "false"
+      EUREKA_SERVER_ENABLE_SELF_PRESERVATION: "false"
+      EUREKA_SERVER_RENEWAL_PERCENT_THRESHOLD: 0.85
+    ports:
+      - "8761:8761"
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8761/actuator/health || exit 1"]
+      <<: *healthcheck-defaults
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.5"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ----------------------------------------------------------
+  #  API Gateway
+  # ----------------------------------------------------------
+  api-gateway:
+    image: banking/api-gateway:latest
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: banking-gateway
+    restart: unless-stopped
+    depends_on:
+      eureka-server:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8080
+      JWT_SECRET: ${JWT_SECRET:-my-jwt-secret-key-change-in-production}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme}
+      # Rate limiting config
+      RESILIENCE4J_RATELIMITER_INSTANCES_DEFAULT_LIMITFORPERIOD: 100
+      RESILIENCE4J_RATELIMITER_INSTANCES_DEFAULT_LIMITREFRESHPERIOD: 1s
+    ports:
+      - "8080:8080"
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health || exit 1"]
+      <<: *healthcheck-defaults
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+          cpus: "0.75"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "5"
+
+  # ==========================================================
+  #  MICROSERVICES LAYER
+  # ==========================================================
+
+  # ----------------------------------------------------------
+  #  Auth Service  (port 8081)
+  # ----------------------------------------------------------
+  auth-service:
+    image: banking/auth-service:latest
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+    container_name: banking-auth
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8081
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/auth_db
+      SPRING_DATASOURCE_USERNAME: banking_admin
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-changeme}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme}
+      JWT_SECRET: ${JWT_SECRET:-my-jwt-secret-key-change-in-production}
+      JWT_EXPIRATION_MS: 900000       # 15 minutes
+      JWT_REFRESH_EXPIRATION_MS: 604800000  # 7 days
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    ports:
+      - "8081:8081"
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health || exit 1"]
+      <<: *healthcheck-defaults
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+          cpus: "0.75"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "5"
+
+  # ----------------------------------------------------------
+  #  Profile Service  (port 8082)
+  # ----------------------------------------------------------
+  profile-service:
+    image: banking/profile-service:latest
+    build:
+      context: ./profile-service
+      dockerfile: Dockerfile
+    container_name: banking-profile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8082
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/profile_db
+      SPRING_DATASOURCE_USERNAME: banking_admin
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-changeme}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    ports:
+      - "8082:8082"
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/actuator/health || exit 1"]
+      <<: *healthcheck-defaults
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+          cpus: "0.75"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "5"
+
+  # ----------------------------------------------------------
+  #  Account Service  (port 8083)
+  # ----------------------------------------------------------
+  account-service:
+    image: banking/account-service:latest
+    build:
+      context: ./account-service
+      dockerfile: Dockerfile
+    container_name: banking-account
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8083
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/account_db
+      SPRING_DATASOURCE_USERNAME: banking_admin
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-changeme}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    ports:
+      - "8083:8083"
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/actuator/health || exit 1"]
+      <<: *healthcheck-defaults
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+          cpus: "0.75"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "5"
+
+  # ----------------------------------------------------------
+  #  Transaction Service  (port 8084)
+  # ----------------------------------------------------------
+  transaction-service:
+    image: banking/transaction-service:latest
+    build:
+      context: ./transaction-service
+      dockerfile: Dockerfile
+    container_name: banking-transaction
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8084
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/transaction_db
+      SPRING_DATASOURCE_USERNAME: banking_admin
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-changeme}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # Idempotency TTL in seconds (24 hours)
+      IDEMPOTENCY_TTL_SECONDS: 86400
+    ports:
+      - "8084:8084"
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8084/actuator/health || exit 1"]
+      <<: *healthcheck-defaults
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "7"
+
+  # ----------------------------------------------------------
+  #  Notification Service  (port 8085)
+  # ----------------------------------------------------------
+  notification-service:
+    image: banking/notification-service:latest
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    container_name: banking-notification
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8085
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/notification_db
+      SPRING_DATASOURCE_USERNAME: banking_admin
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-changeme}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # Mail config (override via .env)
+      SPRING_MAIL_HOST: ${MAIL_HOST:-smtp.gmail.com}
+      SPRING_MAIL_PORT: ${MAIL_PORT:-587}
+      SPRING_MAIL_USERNAME: ${MAIL_USERNAME:-noreply@bank.com}
+      SPRING_MAIL_PASSWORD: ${MAIL_PASSWORD:-changeme}
+      # SMS (Twilio) config
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+    ports:
+      - "8085:8085"
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8085/actuator/health || exit 1"]
+      <<: *healthcheck-defaults
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+          cpus: "0.5"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "5"
+
+  # ==========================================================
+  #  OBSERVABILITY
+  # ==========================================================
+
+  # ----------------------------------------------------------
+  #  Kafka UI (dev/ops console)
+  # ----------------------------------------------------------
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: banking-kafka-ui
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: banking-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+      AUTH_TYPE: LOGIN_FORM
+      SPRING_SECURITY_USER_NAME: ${KAFKA_UI_USER:-admin}
+      SPRING_SECURITY_USER_PASSWORD: ${KAFKA_UI_PASS:-admin}
+    ports:
+      - "9090:8080"
+    networks:
+      - banking-network
+    profiles:
+      - observability
+
+  # ----------------------------------------------------------
+  #  pgAdmin (database console)
+  # ----------------------------------------------------------
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: banking-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@bank.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASS:-changeme}
+      PGADMIN_LISTEN_PORT: 5050
+    ports:
+      - "5050:5050"
+    networks:
+      - banking-network
+    profiles:
+      - observability
+    volumes:
+      - ./scripts/pgadmin-servers.json:/pgadmin4/servers.json:ro
+
+  # ----------------------------------------------------------
+  #  Prometheus (Metrics Scraper)
+  # ----------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: banking-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - banking-network
+    profiles:
+      - heavy-ops
+
+  # ----------------------------------------------------------
+  #  Grafana (Metrics Dashboard)
+  # ----------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: banking-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - banking-network
+    profiles:
+      - heavy-ops
+
+  # ----------------------------------------------------------
+  #  Elasticsearch (Log Storage)
+  # ----------------------------------------------------------
+  elasticsearch:
+    image: elasticsearch:8.13.2
+    container_name: banking-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    networks:
+      - banking-network
+    profiles:
+      - heavy-ops
+
+  # ----------------------------------------------------------
+  #  Logstash (Log Processor)
+  # ----------------------------------------------------------
+  logstash:
+    image: logstash:8.13.2
+    container_name: banking-logstash
+    volumes:
+      - ./monitoring/logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+    ports:
+      - "5000:5000"
+    environment:
+      - "LS_JAVA_OPTS=-Xms256m -Xmx256m"
+    networks:
+      - banking-network
+    depends_on:
+      - elasticsearch
+    profiles:
+      - heavy-ops
+
+  # ----------------------------------------------------------
+  #  Kibana (Log Dashboard)
+  # ----------------------------------------------------------
+  kibana:
+    image: kibana:8.13.2
+    container_name: banking-kibana
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    networks:
+      - banking-network
+    depends_on:
+      - elasticsearch
+    profiles:
+      - heavy-ops

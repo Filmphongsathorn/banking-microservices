@@ -1,0 +1,5 @@
+# Config for notification-service (docker profile)
+# Extends application.yml shared config
+spring:
+  application:
+    name: notification-service

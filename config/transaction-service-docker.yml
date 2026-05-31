@@ -1,0 +1,5 @@
+# Config for transaction-service (docker profile)
+# Extends application.yml shared config
+spring:
+  application:
+    name: transaction-service

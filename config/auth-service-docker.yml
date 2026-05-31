@@ -1,0 +1,5 @@
+# Config for auth-service (docker profile)
+# Extends application.yml shared config
+spring:
+  application:
+    name: auth-service

@@ -1,0 +1,97 @@
+# ============================================================
+#  Config Repository – api-gateway-docker.yml
+#  Path: ./config/api-gateway-docker.yml
+# ============================================================
+
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          enabled: true
+          lower-case-service-id: true
+      default-filters:
+        - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin
+      globalcors:
+        corsConfigurations:
+          '[/**]':
+            allowedOriginPatterns: "*"
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - PATCH
+              - OPTIONS
+            allowedHeaders: "*"
+            maxAge: 3600
+      routes:
+        # Auth Service
+        - id: auth-service
+          uri: lb://auth-service
+          predicates:
+            - Path=/auth/**
+          filters:
+            - StripPrefix=0
+            - name: CircuitBreaker
+              args:
+                name: authCB
+                fallbackUri: forward:/fallback/auth
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 20
+                redis-rate-limiter.burstCapacity: 40
+                key-resolver: "#{@ipKeyResolver}"
+
+        # Profile Service
+        - id: profile-service
+          uri: lb://profile-service
+          predicates:
+            - Path=/api/v1/profiles/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+            - name: CircuitBreaker
+              args:
+                name: profileCB
+                fallbackUri: forward:/fallback/profile
+
+        # Account Service
+        - id: account-service
+          uri: lb://account-service
+          predicates:
+            - Path=/api/v1/accounts/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+            - name: CircuitBreaker
+              args:
+                name: accountCB
+                fallbackUri: forward:/fallback/account
+
+        # Transaction Service
+        - id: transaction-service
+          uri: lb://transaction-service
+          predicates:
+            - Path=/api/v1/transactions/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+            - name: CircuitBreaker
+              args:
+                name: transactionCB
+                fallbackUri: forward:/fallback/transaction
+
+        # Notification Service
+        - id: notification-service
+          uri: lb://notification-service
+          predicates:
+            - Path=/api/v1/notifications/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter

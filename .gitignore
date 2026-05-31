@@ -1,0 +1,30 @@
+# Secrets (NEVER commit these)
+secrets/
+.env
+*.txt.bak
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# Build artifacts
+target/
+build/
+*.jar
+*.war
+
+# Docker
+.docker/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reports
+*.html

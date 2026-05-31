@@ -1,0 +1,47 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: auth-service
+
+  profiles:
+    active: docker
+
+  datasource:
+    url: jdbc:postgresql://postgres:5432/auth_db   # ✅ เปลี่ยน localhost → postgres (ชื่อ container)
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      connection-timeout: 20000
+      maximum-pool-size: 5
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true                           # ✅ เอา dialect ออก (Hibernate เลือกเอง)
+
+# ✅ เพิ่ม Eureka config (ชี้ไป container eureka-server)
+eureka:
+  client:
+    service-url:
+      defaultZone: http://eureka-server:8761/eureka/
+    fetch-registry: true
+    register-with-eureka: true
+  instance:
+    prefer-ip-address: true
+    hostname: auth-service
+
+jwt:
+  secret: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970
+  expiration: 86400000        # 24 hours in ms
+  refresh-expiration: 604800000  # 7 days in ms
+
+logging:
+  level:
+    com.banking: DEBUG
+    org.springframework.security: DEBUG

@@ -1,0 +1,42 @@
+server:
+  port: 8761
+
+spring:
+  application:
+    name: service-registry
+  security:
+    user:
+      name: eureka-admin
+      password: eureka-secret-2024
+
+eureka:
+  instance:
+    hostname: localhost
+  client:
+    # ห้าม register ตัวเองเข้า Eureka เด็ดขาด
+    register-with-eureka: false
+    # ห้าม fetch registry ของตัวเอง
+    fetch-registry: false
+    service-url:
+      defaultZone: http://eureka-admin:eureka-secret-2024@${eureka.instance.hostname}:${server.port}/eureka/
+  server:
+    # รอ heartbeat นานแค่ไหนก่อนถือว่า service ตาย (ms)
+    eviction-interval-timer-in-ms: 5000
+    # ปิด self-preservation mode ใน dev (production ควรเปิด)
+    enable-self-preservation: false
+    # ใน dev ลด threshold ลงเพื่อ deregister เร็ว
+    renewal-percent-threshold: 0.49
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.netflix.eureka: INFO
+    com.netflix.discovery: INFO

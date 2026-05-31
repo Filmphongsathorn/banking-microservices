@@ -1,0 +1,191 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  config:
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: redis_pass_2024
+      timeout: 2000ms
+  cloud:
+    config:
+      username: ${CONFIG_SERVER_USERNAME:config-admin}
+      password: ${CONFIG_SERVER_PASSWORD:config-secret-2024}
+      fail-fast: false
+    gateway:
+      # เปิด Discovery ให้ gateway รู้จัก service ผ่าน Eureka อัตโนมัติ
+      discovery:
+        locator:
+          enabled: true
+          lower-case-service-id: true
+      # Global CORS
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOrigins:
+              - "http://localhost:3000"
+              - "http://localhost:4200"
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+            allowedHeaders:
+              - "*"
+            allowCredentials: true
+            maxAge: 3600
+      # Default filters ที่ใช้กับทุก route
+      default-filters:
+        - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin
+        - name: RequestRateLimiter
+          args:
+            redis-rate-limiter.replenishRate: 100
+            redis-rate-limiter.burstCapacity: 200
+            redis-rate-limiter.requestedTokens: 1
+            key-resolver: "#{@ipKeyResolver}"
+      routes:
+        # ─── AUTH SERVICE ────────────────────────────────────────
+        - id: auth-service-route
+          uri: lb://auth-service
+          predicates:
+            - Path=/auth/**
+          filters:
+            - StripPrefix=0
+            - name: CircuitBreaker
+              args:
+                name: auth-cb
+                fallbackUri: forward:/fallback/auth
+            - name: Retry
+              args:
+                retries: 3
+                statuses: BAD_GATEWAY,INTERNAL_SERVER_ERROR
+                methods: GET,POST
+                backoff:
+                  firstBackoff: 100ms
+                  maxBackoff: 500ms
+                  factor: 2
+
+        # ─── PROFILE SERVICE ─────────────────────────────────────
+        - id: profile-service-route
+          uri: lb://profile-service
+          predicates:
+            - Path=/api/v1/profiles/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+            - name: CircuitBreaker
+              args:
+                name: profile-cb
+                fallbackUri: forward:/fallback/profile
+
+        # ─── ACCOUNT SERVICE ─────────────────────────────────────
+        - id: account-service-route
+          uri: lb://account-service
+          predicates:
+            - Path=/api/v1/accounts/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+            - name: CircuitBreaker
+              args:
+                name: account-cb
+                fallbackUri: forward:/fallback/account
+
+        # ─── TRANSACTION SERVICE ─────────────────────────────────
+        - id: transaction-service-route
+          uri: lb://transaction-service
+          predicates:
+            - Path=/api/v1/transactions/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+            - name: CircuitBreaker
+              args:
+                name: transaction-cb
+                fallbackUri: forward:/fallback/transaction
+
+        # ─── NOTIFICATION SERVICE ────────────────────────────────
+        - id: notification-service-route
+          uri: lb://notification-service
+          predicates:
+            - Path=/api/v1/notifications/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+            - name: CircuitBreaker
+              args:
+                name: notification-cb
+                fallbackUri: forward:/fallback/notification
+
+# Eureka Client
+eureka:
+  client:
+    service-url:
+      defaultZone: http://eureka-admin:eureka-secret-2024@localhost:8761/eureka/
+    registry-fetch-interval-seconds: 5
+  instance:
+    prefer-ip-address: true
+    lease-renewal-interval-in-seconds: 10
+
+# JWT config (gateway ใช้ verify token เท่านั้น ไม่ออก token)
+jwt:
+  secret: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970
+
+# Resilience4j Circuit Breaker
+resilience4j:
+  circuitbreaker:
+    instances:
+      auth-cb:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        waitDurationInOpenState: 10s
+        failureRateThreshold: 50
+      profile-cb:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        waitDurationInOpenState: 10s
+        failureRateThreshold: 50
+      account-cb:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        waitDurationInOpenState: 10s
+        failureRateThreshold: 50
+      transaction-cb:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        waitDurationInOpenState: 10s
+        failureRateThreshold: 50
+      notification-cb:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        waitDurationInOpenState: 10s
+        failureRateThreshold: 50
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,gateway
+  endpoint:
+    health:
+      show-details: always
+    gateway:
+      enabled: true
+
+logging:
+  level:
+    org.springframework.cloud.gateway: INFO
+    com.banking.gateway: DEBUG

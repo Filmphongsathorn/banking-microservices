@@ -1,0 +1,30 @@
+# profile-service.yml
+server:
+  port: 8082
+
+spring:
+  application:
+    name: profile-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/profile_db
+    username: banking_user
+    password: banking_pass_2024
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    show-sql: false
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true

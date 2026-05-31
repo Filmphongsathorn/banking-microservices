@@ -1,0 +1,154 @@
+server:
+  port: 8084
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: transaction-service
+
+eureka:
+  client:
+    serviceUrl:
+      defaultZone: ${EUREKA_CLIENT_SERVICEURL_DEFAULTZONE:http://eureka-server:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+
+  # ====================================================
+  # PostgreSQL (transaction_db)
+  # ====================================================
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:transaction_db}
+    username: ${DB_USERNAME:txuser}
+    password: ${DB_PASSWORD:txpassword}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: TransactionHikariPool
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      connection-test-query: SELECT 1
+
+  jpa:
+    hibernate:
+      ddl-auto: update             # ✅ แก้จาก validate → update (สร้าง table อัตโนมัติ)
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true           # ✅ เอา dialect ออก (ไม่จำเป็น Hibernate เลือกเอง)
+        jdbc:
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+
+  # ====================================================
+  # Redis (Idempotency)
+  # ====================================================
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 3000ms
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+          max-wait: 2000ms
+
+  # ====================================================
+  # Kafka
+  # ====================================================
+  kafka:
+    bootstrap-servers: ${KAFKA_BROKERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+        spring.json.add.type.headers: false
+
+  # ====================================================
+  # Flyway — ปิดไว้ก่อน ใช้ ddl-auto: update แทน
+  # ====================================================
+  flyway:
+    enabled: false                 # ✅ ปิด Flyway (ไม่มีไฟล์ migration)
+
+# ====================================================
+# Kafka Topics
+# ====================================================
+kafka:
+  topics:
+    transaction-events: transaction-events
+
+# ====================================================
+# Feign (account-service)
+# ====================================================
+services:
+  account-service:
+    url: ${ACCOUNT_SERVICE_URL:http://localhost:8083}
+
+feign:
+  client:
+    config:
+      default:
+        connectTimeout: 5000
+        readTimeout: 10000
+        loggerLevel: FULL
+  circuitbreaker:
+    enabled: true
+
+# ====================================================
+# Resilience4j Circuit Breaker
+# ====================================================
+resilience4j:
+  circuitbreaker:
+    instances:
+      accountService:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        waitDurationInOpenState: 10s
+        failureRateThreshold: 50
+        eventConsumerBufferSize: 10
+  timelimiter:
+    instances:
+      accountService:
+        timeoutDuration: 10s
+
+# ====================================================
+# Actuator / Monitoring
+# ====================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,circuitbreakers
+  endpoint:
+    health:
+      show-details: when_authorized
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+  tracing:
+    sampling:
+      probability: 1.0
+
+# ====================================================
+# Logging
+# ====================================================
+logging:
+  level:
+    com.bank.transaction: DEBUG
+    org.springframework.kafka: INFO
+    feign: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] [%X{traceId:-},%X{spanId:-}] %-5level %logger{36} - %msg%n"
