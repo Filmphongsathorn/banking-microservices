@@ -55,26 +55,15 @@ Spring Boot Microservices Banking Platform
 - Docker 24+ and Docker Compose v2.20+
 - 8 GB RAM minimum (16 GB recommended for production)
 
-### 1. Configure secrets
+### 1. Clone & Setup
+
+Just clone the repository. No complex configuration or secret files needed for local development! Everything is configured to run out-of-the-box.
+
+### 2. Start the platform
 
 ```bash
-# Copy and edit environment variables
-cp .env.example .env
-nano .env   # set real passwords
-
-# Create secrets directory (auto-created on first run, but you can pre-fill)
-mkdir -p secrets
-echo "YourSecureDBPassword"  > secrets/db_password.txt
-echo "YourRedisPassword"     > secrets/redis_password.txt
-echo "YourJWTSecretKey256bit" > secrets/jwt_secret.txt
-chmod 600 secrets/*.txt
-```
-
-### 2. Build service images
-
-```bash
-# Build all services (run from repo root)
-docker compose build --parallel
+# Start all microservices, databases, and monitoring tools
+docker-compose --profile heavy-ops --profile observability up -d --build
 ```
 
 ### 3. Start the platform
